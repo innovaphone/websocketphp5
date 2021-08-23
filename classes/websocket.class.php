@@ -32,6 +32,8 @@ function cast2class($obj, $targetclass) {
  * fully represents a WebSocket message
  */
 class Message {
+    
+    // var $api = null;
 
     /**
      * the only mandatory member, the message type
@@ -66,8 +68,10 @@ class Message {
     function __construct($mt) {
         $na = func_num_args();
         $a = func_get_args();
-        if (!($na & 1))
+        if (!($na & 1)) {
             die("Message constructor needs odd number of arguments (got " . print_r($a, true));
+            // $this->api = array_shift($a);
+        }
         $this->mt = array_shift($a);
         $na--;
         while ($na >= 2) {
@@ -278,7 +282,7 @@ class Log {
      *   each element is an array with key = category
      * @var string[]
      */
-    static private $loglevel = array("" => array("" => false, "runtime" => true, "error" => true, "smsg" => true));
+    static private $loglevel = array("" => array("" => false, "runtime" => true, "error" => true));
 
     /**
      * set log level for source and category
@@ -348,7 +352,7 @@ class Log {
         $td = ((int) (($e->t - $tl) * 1000)) / 1000;
         $t0d = ((int) (($e->t - $t0) * 1000)) / 1000;
         $ms = (int) (($e->t - (int) $e->t) * 10000);
-        $msg = strftime("%c.", (int) $e->t);
+        $msg = strftime("%d.%m.%Y %H:%M:%S.", (int) $e->t);
         $msg .= sprintf("%04d %05.3f %08.3f %s %s", $ms, $td, $t0d, $e->category, $e->class) . ":  " . $e->msg;
         return $msg;
     }
@@ -716,6 +720,7 @@ abstract class FinitStateAutomaton {
         // or
         //   https://apps.sample.dom/gartenzwerg.com/meine-schoenen-devices/$innovaphone-devices
         // we strip the trailing component and change http to ws to create the WS uri
+
         $parts = explode('/', $weburl);
         if (count($parts) > 0) {
             unset($parts[count($parts) - 1]);
@@ -1045,7 +1050,7 @@ class Transitioner {
 }
 
 /**
- * This automaton will log you in to a specific AppService using the PBX's shared scret for the App
+ * This automaton will log you in to a specific AppService using the PBX's shared secret for the App
  * (provided as AppServiceCredentials)
  */
 class AppLoginAutomaton extends FinitStateAutomaton {
@@ -1193,6 +1198,11 @@ class UserPBXLoginResults {
      */
     public $UpdateAppsMsg = null;
     public $updateAppsComplete = false;
+
+    public function __construct() {
+        $this->UpdateAppsMsg = new \stdClass();
+        $this->UpdateAppsMsg->apps = array();
+    }
 
 }
 
@@ -1353,13 +1363,13 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
             }
         }
         if (!empty($msg->error)) {
-            $this->log("Login failed: {$msg->errorText}", "error");
+            $this->log("Login failed: {$msg->errorText}", "runtime");
             $msg->setMt("UserPBXLoginFailure");
             $this->isLoggedIn = false;
             $this->sessionCredentials = null;
         } else {
             $this->isLoggedIn = true;
-            $this->log("Successfully logged-in to PBX for {$this->cred->getName()}", "runtime");
+            $this->log("Successfully logged-in to PBX " . parse_url($this->getWs()->getUrl(), PHP_URL_HOST) . " as {$this->cred->getName()}", "runtime");
 
             if (!empty($msg->info->session)) {
                 $sessionUsername = (rc4Encrypt($usrx = "innovaphoneAppClient:usr:" . $this->cred->nonce . ":" . $this->results->loginMsg->password, \NTLM\hex2bin($msg->info->session->usr)));
@@ -1374,15 +1384,17 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
         }
         // can we recover?
         if (!$this->isLoggedIn) {
-            if ($this->results->loginMsg->type == "session") {
-                // we tried a session login, retry with user credentials if available
-                if ($this->cred->getName() != "") {
-                    $this->log("session login failed, retrying with user credentials", "runtime");
-                    // so do not use session keys on next round
-                    $this->cred->setDisableSessionkeys();
-                    $this->ReceiveInitialStart(new Message("Start"));
-                    return;
-                }
+            if (($this->results->loginMsg->type == "session") &&
+                    // we tried a session login, retry with user credentials if available
+                    ($this->cred->getName() != "")) {
+                $this->log("session login failed, retrying with user credentials", "runtime");
+                // so do not use session keys on next round
+                $this->cred->setDisableSessionkeys();
+                $this->ReceiveInitialStart(new Message("Start"));
+                return;
+            } else {
+                $this->log("session login failed with user credentials", "error");
+                return "Dead";
             }
         }
         return $this->tryLoginComplete();
@@ -1507,7 +1519,7 @@ class AppServiceSpec {
     var $domain;
 
     /**
-     * AppService specfification
+     * AppService specification
      * @param string $service service name, must match the last part of the instance URI 
      * @param string $name instance name, must match the name as configured in the PBX
      * @param string $domain domain name, must match the first part of the instance URI 
@@ -1529,7 +1541,7 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
 
     /**
      *
-     * @var AppServiceSpec specifies appt to connecto to
+     * @var AppServiceSpec specifies app to connect to
      */
     private $sSpec;
 
@@ -1538,6 +1550,12 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
      * @var stdClass
      */
     private $selectedApp = null;
+
+    /**
+     * array of maps: FQDN to passthrough URL (via Devices)
+     * @var string[]
+     */
+    private $passthrough = array();
 
     /**
      * the app info for the selected AppService instance
@@ -1554,9 +1572,11 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
      * @param string $service name of the service type.  This is what the PBX will announce as last part of the apps[]->uri member
      * @param string $name name of the service instance (given by the PBX as apps[]->name).  If left null, the first instance is used
      * @param string $nickname nick name for the automaton (only for logging)
+     * @param string[] $passthrough array of maps: FQDN to passthrough-URL (via Devices)
      */
-    public function __construct(WSClient $ws, AppServiceSpec $spec, $nickname = "AppLoginViaPBXA") {
+    public function __construct(WSClient $ws, AppServiceSpec $spec, $nickname = "AppLoginViaPBXA", $passthrough = array()) {
         $this->sSpec = $spec;
+        $this->passthrough = $passthrough;
         parent::__construct($ws, null, $nickname);
     }
 
@@ -1605,7 +1625,13 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
             return parent::ReceiveInitialAppLoginResult(new Message("AppLoginResult"));
         }
         $this->selectedApp = $app;
-        $wsuri = $this->makeWebSocketUri($app->url);
+        $urlhost = parse_url($app->url, PHP_URL_HOST);
+        if (isset($this->passthrough[strtolower($urlhost)])) {
+            $useUrl = (preg_replace("@^[^:]*:\/\/$urlhost\/@", $this->passthrough[strtolower($urlhost)] . "/", $app->url));
+        } else {
+            $useUrl = $app->url;
+        }
+        $wsuri = $this->makeWebSocketUri($useUrl);
 
         $this->getWs()->setUrl($wsuri);
         $this->log("starting app login now for $wsuri ($app->title), " . ($this->getWs()->isConnected() ? "" : " not") . " connected");
@@ -1693,6 +1719,12 @@ class AppServiceLogin {
     private $appServiceWS = array();
 
     /**
+     * array of maps: FQDN to passthrough URL (via Devices)
+     * @var string[] 
+     */
+    private $passthrough = array();
+
+    /**
      * get the WSClient for the app that matched $spec
      * @param AppServiceSpec $spec
      * @return WSClient
@@ -1727,16 +1759,20 @@ class AppServiceLogin {
         Log::log($msg, $category, get_class());
     }
 
+    protected $sessionFn = null;
+
     /**
      * setup the class to authenticate and connect to the AppServices
      * @param string $pbx WebSocekt URI to PBX, either pure FQDN/IP or the full URI
      * @param AppUserCredentials $credentials to log in to the PBX
      * @param AppServiceSpec[] $appServiceSpec specifies the services to connect to
-     * @param array $log
+     * @param bool $useWS if true, ws:// instead of wss:// is used
+     * @param string[] $passthrough array of maps: FQDN to passthrough URL (via Devices)
      */
-    function __construct($pbx, AppUserCredentials $credentials, $appServiceSpec = array(), $useWS = false) {
+    function __construct($pbx, AppUserCredentials $credentials, $appServiceSpec = array(), $useWS = false, $passthrough = array()) {
 
         $this->useWS = $useWS;
+        $this->passthrough = $passthrough;
         $this->pbxUrl = (strpos($pbx, "s://") !== false) ? $pbx :
                 $this->pbxUrl = ($useWS ? "ws" : "wss") . "://$pbx/PBX0/APPCLIENT/130000/websocket";
         $this->pbxOldSessionKey = new AppUserSessionCredentials();
@@ -1744,6 +1780,14 @@ class AppServiceLogin {
         if (!is_array($appServiceSpec))
             $appServiceSpec = array($appServiceSpec);
         $this->appServiceSpec = $appServiceSpec;
+
+        // create hopefully uniq session kex file name
+        $pbxid = parse_url($this->pbxUrl, PHP_URL_HOST);
+        if (strpos($this->pbxUrl, "/passthrough/") !== false &&
+                preg_match('@/passthrough/([^/]*)/@', $this->pbxUrl, $matches)) {
+            $pbxid = "{$matches[1]}.$pbxid";
+        }
+        $this->sessionFn = ("session-" . $this->credentials->getName() . "-" . $pbxid . ".sessioninfo");
     }
 
     /**
@@ -1764,7 +1808,7 @@ class AppServiceLogin {
         foreach ($this->appServiceSpec as $spec) {
             $sspec = serialize($spec);
             $id = strtoupper("{$spec->app}-{$spec->service}");
-            $this->appServiceAS[$sspec] = new AppLoginViaPBXAutomaton($this->appServiceWS[$sspec] = new WSClient("$id-WS"), $spec, "$id-A");
+            $this->appServiceAS[$sspec] = new AppLoginViaPBXAutomaton($this->appServiceWS[$sspec] = new WSClient("$id-WS"), $spec, "$id-A", $this->passthrough);
             $this->appServiceAS[$sspec]->setUseWS($this->useWS);
             $napps++;
         }
@@ -1812,26 +1856,26 @@ class AppServiceLogin {
     }
 
     /**
-     * save session key to persistant memory.  May be overriden by derived class
+     * save session key to persistent memory.  May be overriden by derived class
      * @param string $sk
      * @return bool false on error
      */
     protected function writeSessionKey($sk) {
-        return @file_put_contents("session.txt", $sk);
+        return @file_put_contents($this->sessionFn, $sk);
     }
 
     /**
-     * read session key from persistant memory.  May be overriden by derived class
+     * read session key from persistent memory.  May be overriden by derived class
      * @return string retrieved session key data, false on error
      */
     protected function readSessionKey() {
-        return @file_get_contents("session.txt");
+        return @file_get_contents($this->sessionFn);
     }
 
 }
 
 /**
- * a class to get access to the AdminUI of a devices which is registered with Devices
+ * a class to get access to the AdminUI of a device which is registered with Devices
  * you will need an authenticated WebSocket towards the Devices instance
  * you could use something like
  *  $apc = new AppServiceLogin("sindelfingen.sample.dom", new AppUserCredentials("ckl", "pwd"), new AppServiceSpec("\$innovaphone-devices"));
@@ -1857,6 +1901,8 @@ class DevicesGetAdminAccess extends FinitStateAutomaton {
      */
     protected $domains = array();
     private $gotDomains = false, $gotDevices = 0, $gotKey = false;
+    protected $searchDomains = array();
+    private $searchDomainSpec = array();
 
     /**
      * @var string base uri of the APP PlatForm
@@ -1917,21 +1963,21 @@ class DevicesGetAdminAccess extends FinitStateAutomaton {
 
     public function ReceiveInitialStart(Message $msg) {
         $this->sendMessage(new Message("GetDomains", "recvUpdates", false));
-        $this->sendMessage(new Message("GetDevices", "recvUpdates", false, "domainIds", "", "unassigned", false));
         $this->sendMessage(new Message("GetUserInfo"));
     }
 
     public function ReceiveInitialGetDevicesResult(Message $msg) {
-        foreach ($msg->devices as $d) {
-            $fmac = $this->fixmac($d->hwId);
-            if ($this->getAllDevices || isset($this->macs[$fmac])) {
-                $this->macs[$fmac] = $d;
-                $this->gotDevices--;
-                if (!$this->getAllDevices && $this->gotDevices <= 0) {
-                    break;
+        if (isset($msg->devices))
+            foreach ($msg->devices as $d) {
+                $fmac = $this->fixmac($d->hwId);
+                if ($this->getAllDevices || isset($this->macs[$fmac])) {
+                    $this->macs[$fmac] = $d;
+                    $this->gotDevices--;
+                    if (!$this->getAllDevices && $this->gotDevices <= 0) {
+                        break;
+                    }
                 }
             }
-        }
         if (isset($msg->last) && $msg->last) {
             $this->gotDevices = 0;
         }
@@ -1941,9 +1987,16 @@ class DevicesGetAdminAccess extends FinitStateAutomaton {
     public function ReceiveInitialGetDomainsResult($msg) {
         foreach ($msg->domains as $domain) {
             $this->domains[$domain->id] = $domain;
+            if (isset($domain->name) && in_array($domain->name, $this->searchDomains)) {
+                $this->searchDomainSpec[] = $domain->id;
+                $this->log("domain($domain->id, $domain->name)");
+            }
         }
-        if (isset($msg->last) && $msg->last)
+        if (isset($msg->last) && $msg->last) {
             $this->gotDomains = true;
+            // kick off search devices
+            $this->sendMessage(new Message("GetDevices", "recvUpdates", false, "domainIds", implode(',', $this->searchDomainSpec), "unassigned", false));
+        }
         return $this->nextState();
     }
 
@@ -1958,9 +2011,19 @@ class DevicesGetAdminAccess extends FinitStateAutomaton {
      * @param WSClient $ws authenticated websocket towards the Devices instance
      * @param string[] $macs list of device macs we are interested (or null, so we get all known)
      * @param string $nickname
+     * @param string[] $searchDomains optional list of domains to search macs in
      */
-    public function __construct(WSClient $ws, $macs = null, $nickname = "DevAccess") {
+    public function __construct(WSClient $ws, $macs = null, $nickname = null, $searchDomains = array()) {
+
+        if (is_null($nickname))
+            $nickname = "DevAccess";
         parent::__construct($ws, $nickname);
+
+        if (!is_array($searchDomains))
+            $searchDomains = array($searchDomains);
+        foreach ($searchDomains as $sd)
+            $this->searchDomains[] = strtolower($sd);
+
         if ($macs !== null) {
             if (!is_array($macs))
                 $macs = array($macs);
