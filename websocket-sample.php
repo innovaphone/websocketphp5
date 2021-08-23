@@ -1,5 +1,10 @@
 <?php
 
+/*
+ * sample code to access the Users and Devices service on an App platform using PHP
+ * (c) innovaphone AG 2020
+ * @author ckl
+ */
 require_once './classes/websocket.class.php';
 print "<pre>";
 

@@ -31,7 +31,7 @@ namespace NTLM;
 
 function get7Bits($input, $startBit) {
     $word = 0;
-    $word = ord($input[$startBit / 8]) << 8;
+    $word = ord(@$input[$startBit / 8]) << 8;
     if ((($startBit / 8) + 1) < strlen($input))
         $word |= ord($input[($startBit / 8) + 1]);
     $word >>= 15 - (($startBit % 8) + 7);
