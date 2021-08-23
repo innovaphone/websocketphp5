@@ -317,7 +317,7 @@ class Log {
                 return self::$loglevel[""][$category];
             }
         }
-        return self::$loglevel[""][""];
+        return isset(self::$loglevel[""][""]) ? self::$loglevel[""][""] : false;
     }
 
     /**
@@ -877,7 +877,8 @@ class Transitioner {
         } else {
             $this->log("  transitioning $nickname from " . $state
                     . " via $handler");
-            $auto->state->setName(call_user_func($callable, $msg));
+            $auto->state->setName($xcufr = call_user_func($callable, $msg));
+            $this->log("callable '" . $callable[1] . "' returns '$xcufr'");
             $newstate = $auto->state->getName();
             if ($newstate != $state) {
                 $this->log("$nickname state $state->$newstate", "state");
@@ -1191,6 +1192,7 @@ class UserPBXLoginResults {
      * @var Message UpdateApps message
      */
     public $UpdateAppsMsg = null;
+    public $updateAppsComplete = false;
 
 }
 
@@ -1333,7 +1335,7 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
         if (--$this->authWaitCount > 0) {
             return false;
         } else {
-            $this->log("Give up :-(");
+            $this->log("Too many waiting timeouts, give up :-(", "error");
             return true;
         }
     }
@@ -1357,7 +1359,7 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
             $this->sessionCredentials = null;
         } else {
             $this->isLoggedIn = true;
-            $this->log("Successfully logged-in for {$this->cred->getName()}");
+            $this->log("Successfully logged-in to PBX for {$this->cred->getName()}", "runtime");
 
             if (!empty($msg->info->session)) {
                 $sessionUsername = (rc4Encrypt($usrx = "innovaphoneAppClient:usr:" . $this->cred->nonce . ":" . $this->results->loginMsg->password, \NTLM\hex2bin($msg->info->session->usr)));
@@ -1383,10 +1385,14 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
                 }
             }
         }
-        $this->postEvent($msg);
-        return "Dead";
+        return $this->tryLoginComplete();
     }
 
+    /**
+     * this message seems to be obsoleted by a sequence of UpdateAppsInfo
+     * @param \AppPlatform\Message $msg
+     * @return string new state
+     */
     public function ReceiveInitialUpdateApps(Message $msg) {
 
         $this->results->UpdateAppsMsg = $msg;
@@ -1395,10 +1401,35 @@ class UserPBXLoginAutomaton extends FinitStateAutomaton {
         return "Dead";
     }
 
+    public function ReceiveInitialUpdateAppsInfo(Message $msg) {
+        $this->results->UpdateAppsMsg->apps[] = $msg->app;
+    }
+
+    public function ReceiveInitialUpdateAppsComplete(Message $msg) {
+        $this->results->updateAppsComplete = true;
+        return $this->tryLoginComplete();
+    }
+
+    private function tryLoginComplete() {
+        $this->log("tryLoginComplete called");
+        if ($this->results->updateAppsComplete && $this->results->loginResultMsg !== null) {
+            $this->log("posting PBX login final result type '{$this->results->loginResultMsg->mt}'");
+            $this->postEvent($this->results->loginResultMsg);
+
+            $ok = new Message("UserPBXLoginSuccess", "results", $this->results);
+            $this->postEvent($ok);
+            return "Dead";
+        } else {
+            $this->log("tryLoginComplete not yet Dead (updateAppsComplete=" . ($this->results->updateAppsComplete ? "true" : "false") . ", loginResultMsg=" . ($this->results->loginResultMsg === null ? "null" : $this->results->loginResultMsg->mt) . ")");
+        }
+    }
+
 }
 
 /**
  * an automaton which allows to log in to an AppService using a PBX user account
+ * 
+ * derived from UserPBXLoginAutomaton so it must override all Receive functions which might transition to "Dead" before this automaton is finished
  */
 class UserPBXLoginWithAppAutomaton extends UserPBXLoginAutomaton {
 
@@ -1423,6 +1454,15 @@ class UserPBXLoginWithAppAutomaton extends UserPBXLoginAutomaton {
      */
     public function ReceiveInitialUpdateApps(Message $msg) {
         parent::ReceiveInitialUpdateApps($msg);
+        // return nothing, so this automaton will not transition to "Dead" here
+    }
+
+    /**
+     * calls parent function but supresses the transition to "Dead"
+     * @param Message $msg
+     */
+    public function ReceiveInitialUpdateAppsComplete(Message $msg) {
+        parent::ReceiveInitialUpdateAppsComplete($msg);
         // return nothing, so this automaton will not transition to "Dead" here
     }
 
