@@ -1,7 +1,7 @@
 <?php
 
 /*
- * sample code to access PBX APIs
+ * sample code to access PBX RCC API
  * (c) innovaphone AG 2020
  */
 date_default_timezone_set("Europe/Berlin");
@@ -9,7 +9,7 @@ date_default_timezone_set("Europe/Berlin");
 // pbx data, you can override it by placing similar next 4 lines into file my-pbx-data.php
 $pbxdns = "sindelfingen.sample.dom";
 $pbxpw = "ip411";
-$pbxapp = "pbxadminapi";
+$pbxapp = "rccapi";
 // end of local pbx data
 @include 'my-pbx-data.php';
 
@@ -24,7 +24,7 @@ AppPlatform\Log::setLogLevel("", "", false);
 // turn on log messages of some major categories for all sources
 AppPlatform\Log::setLogLevel("", array("error", "runtime"), true);
 // if you want to see a message trace, uncomment next line
-AppPlatform\Log::setLogLevel("", array("smsg", /* "debug" */), true);
+AppPlatform\Log::setLogLevel("", array("smsg", "debug"), true);
 // turn on all catgeories for the calling script
 AppPlatform\Log::setLogLevel("script", "", true);
 
@@ -68,10 +68,15 @@ $app->run();
 class PbxApiSample extends AppPlatform\FinitStateAutomaton {
 
     public function ReceiveInitialStart(\AppPlatform\Message $msg) {
-        $this->sendMessage(new AppPlatform\Message("GetStun", "api", "PbxAdminApi"));
+        $this->sendMessage(new AppPlatform\Message("Initialize", "api", "RCC"));
     }
 
-    public function ReceiveInitialGetStunResult(\AppPlatform\Message $msg) {
+    public function ReceiveInitialUserInfo(\AppPlatform\Message $msg) {
+        $this->log("UserInfo");
+    }
+    
+    public function ReceiveInitialInitializeResult(\AppPlatform\Message $msg) {
+        $this->log("InitializeResult");
         return "Dead";
     }
 
