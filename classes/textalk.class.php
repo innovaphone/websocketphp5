@@ -1,37 +1,48 @@
-<?php 
+<?php
 
 /*
 
-This file is based on the textalk library, version 1.2
-Some changes have been done by innovaphone 
+  This file is based on the textalk library, version 1.2
+  Some changes have been done by innovaphone
 
-License ([ISC](http://en.wikipedia.org/wiki/ISC_license))
----------------------------------------------------------
+  License ([ISC](http://en.wikipedia.org/wiki/ISC_license))
+  ---------------------------------------------------------
 
-Copyright (C) 2014, 2015 Textalk
-Copyright (C) 2015 Patrick McCarren - added payload fragmentation for huge payloads
-Copyright (C) 2015 Ignas Bernotas - added stream context options
-Copyright (C) 2018 innovaphone AG - added async IO 
+  Copyright (C) 2014, 2015 Textalk
+  Copyright (C) 2015 Patrick McCarren - added payload fragmentation for huge payloads
+  Copyright (C) 2015 Ignas Bernotas - added stream context options
+  Copyright (C) 2018 innovaphone AG - added async IO
 
-Websocket PHP is free software: Permission to use, copy, modify, and/or distribute this software
-for any purpose with or without fee is hereby granted, provided that the above copyright notice and
-this permission notice appear in all copies.
+  Websocket PHP is free software: Permission to use, copy, modify, and/or distribute this software
+  for any purpose with or without fee is hereby granted, provided that the above copyright notice and
+  this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
-SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
-AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
-NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-THIS SOFTWARE.
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+  SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+  AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+  NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+  THIS SOFTWARE.
 
-*/
+ */
 
 namespace WebSocket;
 
-class Exception extends \Exception {}
-class BadOpcodeException extends Exception {}
-class BadUriException extends Exception {}
-class ConnectionException extends Exception {}
+class Exception extends \Exception {
+    
+}
+
+class BadOpcodeException extends Exception {
+    
+}
+
+class BadUriException extends Exception {
+    
+}
+
+class ConnectionException extends Exception {
+    
+}
 
 class Base {
 
@@ -45,7 +56,7 @@ class Base {
         'ping' => 9,
         'pong' => 10,
     );
-    
+
     public function getSocket() {
         return $this->socket;
     }
@@ -161,6 +172,10 @@ class Base {
         $this->write($frame);
     }
 
+    /**
+     * receive message from socket
+     * @return boolean | string null => no data yet, false => EOF, otherwise => message received
+     */
     public function receive() {
         if (!$this->is_connected)
             $this->connect(); /// @todo This is a client function, fixme!
@@ -169,19 +184,24 @@ class Base {
 
         $response = null;
         while (is_null($response)) {
+            $this->streamlog("about to receive");
             $response = $this->receive_fragment();
-            if ($response === false)
+            if ($response === false) {
+                $this->streamlog("EOF");
                 return false;
+            }
         }
-
+        $this->streamlog("receive response ($response)");
         return $response;
     }
 
     protected function receive_fragment() {
 
         // Just read the main fragment information first.
-        if (($data = $this->read(2)) === false)
+        if (($data = $this->read(2)) === false) {
+            $this->streamlog("failed to read 2 bytes header");
             return $this->readReset();
+        }
 
         // Is this the final fragment?  // Bit 0 in byte 0
         /// @todo Handle huge payloads with multiple fragments.
@@ -217,23 +237,29 @@ class Base {
                 $data = $this->read(2); // 126: Payload is a 16-bit unsigned int
             else
                 $data = $this->read(8); // 127: Payload is a 64-bit unsigned int
-            if ($data === false)
+            if ($data === false) {
+                $this->streamlog("failed to read header for $payload_length");
                 return $this->readReset();
+            }
             $payload_length = bindec(self::sprintB($data));
         }
 
         // Get masking key.
         if ($mask) {
             $masking_key = $this->read(4);
-            if ($masking_key === false)
+            if ($masking_key === false) {
+                $this->streamlog("failed to read 4 bytes header");
                 return $this->readReset();
+            }
         }
 
-        // Get the actual payload, if any (might not be for e.g. close frames.
+        // Get the actual payload, if any (might not be for e.g. close frames).
         if ($payload_length > 0) {
             $data = $this->read($payload_length);
-            if ($data === false)
+            if ($data === false) {
+                $this->streamlog("failed to read $payload_length payload");
                 return $this->readReset();
+            }
 
             if ($mask) {
                 // Unmask payload.
@@ -257,14 +283,7 @@ class Base {
 
             if ($this->is_closing)
                 $this->is_closing = false; // A close response, all done.
-
-
-
-
-
-
-                
-// And close the socket.
+            // And close the socket.
             fclose($this->socket);
             $this->is_connected = false;
         }
@@ -339,7 +358,7 @@ class Base {
             $this->readData .= $frresult;
         }
     }
-    
+
     public function available() {
         return strlen($this->readData) - $this->readOffset;
     }
@@ -363,13 +382,16 @@ class Base {
             $this->readOffset = $this->oldReadOffset;
             $this->oldReadOffset = null;
         }
-        return false;
+        $this->streamlog("reset read pointer to {$this->readOffset}");
+        // return "fragment incomplete"
+        return feof($this->socket) ? false : null;
     }
 
     protected function readDone() {
         $this->oldReadOffset = null;
         $this->readData = substr($this->readData, $this->readOffset);
         $this->readOffset = 0;
+        $this->streamlog("read done, reset buffer");
     }
 
     /**
@@ -384,7 +406,6 @@ class Base {
 
 }
 
-
 class Client extends Base {
 
     /**
@@ -392,6 +413,22 @@ class Client extends Base {
      * @var string
      */
     protected $socket_uri;
+
+    function streamlog($msg) {
+        static $dodebug = false;
+        if (!$dodebug)
+            return;
+        $this->log("$msg", "streamlog");
+    }
+    
+    function log($msg) {
+        static $pre = false;
+        if (!$pre) {
+            print "<pre>";
+            $pre = true;
+            print "{$this->socket_uri}: blu $msg<br>";
+        }
+    }
 
     /**
      * connect socket to URL
@@ -405,10 +442,11 @@ class Client extends Base {
         $this->connect();
         return $this;
     }
-    
+
     /*
      * get URI this socket is connected to
      */
+
     public function getUrl() {
         return $this->socket_uri;
     }

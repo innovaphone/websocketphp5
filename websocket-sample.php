@@ -5,9 +5,9 @@ print "<pre>";
 // turn off all log messages
 AppPlatform\Log::setLogLevel("", "", false);
 // turn on log messages of some major categories for all sources
-AppPlatform\Log::setLogLevel("", array("error", "runtime"), true);
+// AppPlatform\Log::setLogLevel("", array("error", "runtime"), true);
 // if you want to see a message trace, uncomment next line
-AppPlatform\Log::setLogLevel("", "smsg", true);
+// AppPlatform\Log::setLogLevel("", "smsg", true);
 // turn on all catgeories for the calling script
 AppPlatform\Log::setLogLevel("script", "", true);
 
@@ -16,7 +16,8 @@ $connector = new AppPlatform\AppServiceLogin(
         "sindelfingen.sample.dom", new AppPlatform\AppUserCredentials("ckl", "pwd"), array(
     $devicesspec = new AppPlatform\AppServiceSpec("\$innovaphone-devices"),
     $usersspec = new AppPlatform\AppServiceSpec("users"),
-        )
+        ), 
+        true
 );
 $connector->connect();
 
@@ -132,6 +133,7 @@ class UserLister extends AppPlatform\FinitStateAutomaton {
 }
 
 // get the info 
+AppPlatform\Log::setLogLevel("", "", true);
 $dl = new DeviceLister($devicesws);
 $ul = new UserLister($usersws, $pbxloginresult->loginResultMsg);
 $t = new AppPlatform\Transitioner($dl, $ul);

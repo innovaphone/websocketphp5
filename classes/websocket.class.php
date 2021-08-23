@@ -707,7 +707,6 @@ abstract class FinitStateAutomaton {
 
     // this function at least must be overriden by any derived class
     abstract public function ReceiveInitialStart(\AppPlatform\Message $msg);
-
 }
 
 /**
@@ -965,11 +964,13 @@ class Transitioner {
                                 $auto->state->setRun(false);
                                 continue;
                             }
-                            $this->log("received<-$sourcename $rcv", "smsg");
-                            $msg = Message::fromJSON($rcv);
-                            $msg->_sourcename = $auto->getShortNickname();
-                            if ($this->transitions($sourcename, $msg)) {
-                                $effect = true;
+                            if ($rcv !== null) {
+                                $this->log("received<-$sourcename $rcv", "smsg");
+                                $msg = Message::fromJSON($rcv);
+                                $msg->_sourcename = $auto->getShortNickname();
+                                if ($this->transitions($sourcename, $msg)) {
+                                    $effect = true;
+                                }
                             }
                             // we do not need to read again from this socket for another automaton
                             continue;
@@ -1348,6 +1349,16 @@ class UserPBXLoginWithAppAutomaton extends UserPBXLoginAutomaton {
     protected $nclients = 0;
 
     /**
+     * set the number of app services we shall authenticate towards the PBX
+     * @param int $nclients
+     * @return $this
+     */
+    public function setNclients($nclients) {
+        $this->nclients = $nclients;
+        return $this;
+    }
+
+    /**
      * calls parent function but supresses the transition to "Dead"
      * @param Message $msg
      */
@@ -1367,21 +1378,22 @@ class UserPBXLoginWithAppAutomaton extends UserPBXLoginAutomaton {
     }
 
     /**
-     * an app client automaton needs an AppGetogin from the PBX
+     * an app client automaton needs an AppGetlogin from the PBX
      * @param Message $msg
      */
     public function ReceiveInitialUserPBXLoginNeedGetLogin(Message $msg) {
         // "$msg->challenge" below is to cast an int to string.  we receive it as int from PBX but must send it as string to app
         // this has been fixed in later builds of the PBX
-        $this->nclients++;
         $gl = new Message("AppGetLogin", "app", $msg->app->name, "challenge", "$msg->challenge", "src", $msg->_sourcename);
         $this->sendMessage($gl);
     }
 
     public function ReceiveInitialAppGetLoginResult(Message $msg) {
         $this->postEvent($msg->setMt("GotAppGetLoginResult"), $msg->src);
-        if (--$this->nclients <= 0)
+        if (--$this->nclients <= 0) {
+            $this->log("nclients is 0 now, exiting", "runtime");
             return "Dead";
+        }
     }
 
 }
@@ -1606,6 +1618,11 @@ class AppServiceLogin {
      */
     private $credentials = null;
 
+    /**
+     * @var bool create ws:// instead of wss:// sockets if set
+     */
+    private $useWS = false;
+
     protected function log($msg, $category = "debug") {
         Log::log($msg, $category, get_class());
     }
@@ -1617,10 +1634,11 @@ class AppServiceLogin {
      * @param AppServiceSpec[] $appServiceSpec specifies the services to connect to
      * @param array $log
      */
-    function __construct($pbx, AppUserCredentials $credentials, array $appServiceSpec = array()) {
+    function __construct($pbx, AppUserCredentials $credentials, array $appServiceSpec = array(), $useWS = false) {
 
+        $this->useWS = $useWS;
         $this->pbxUrl = (strpos($pbx, "s://") !== false) ? $pbx :
-                $this->pbxUrl = "wss://$pbx/PBX0/APPCLIENT/130000/websocket";
+                $this->pbxUrl = ($useWS ? "ws" : "wss") . "://$pbx/PBX0/APPCLIENT/130000/websocket";
         $this->pbxOldSessionKey = new AppUserSessionCredentials();
         $this->credentials = $credentials;
         if (!is_array($appServiceSpec))
@@ -1640,14 +1658,18 @@ class AppServiceLogin {
 
         // create automaton which logs in to an AppService via PBX
         $this->pbxA = new UserPBXLoginWithAppAutomaton($this->pbxWS, new AppUserCredentials($this->credentials->getName(), $this->credentials->getPw(), $keys));
+        $this->pbxA->setUseWS($this->useWS);
         // create websocket for the AppService, not yet connected 
-        $devws = new WSClient("DEVICESWS");
-        // create automaton to login to the first DEVICES AppService instance
+        $napps = 0;
         foreach ($this->appServiceSpec as $spec) {
             $sspec = serialize($spec);
             $id = strtoupper("{$spec->app}-{$spec->service}");
             $this->appServiceAS[$sspec] = new AppLoginViaPBXAutomaton($this->appServiceWS[$sspec] = new WSClient("$id-WS"), $spec, "$id-A");
+            $this->appServiceAS[$sspec]->setUseWS($this->useWS);
+            $napps++;
         }
+        // tell class it needs to authenticate $napps app services
+        $this->pbxA->setNclients($napps);
 
         // run all automatons
         $auto = new Transitioner($this->pbxA, $this->appServiceAS);
