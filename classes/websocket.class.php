@@ -32,7 +32,6 @@ function cast2class($obj, $targetclass) {
  * fully represents a WebSocket message
  */
 class Message {
-    
     // var $api = null;
 
     /**
@@ -1093,7 +1092,6 @@ class AppLoginAutomaton extends FinitStateAutomaton {
     }
 
     /**
-
      * the session key of the websocket connection to the AppService (for encryption)
      * @var string 
      */
@@ -1142,10 +1140,12 @@ class AppLoginAutomaton extends FinitStateAutomaton {
      * @param Message $msg
      */
     public function ReceiveInitialAppChallengeResult(Message $msg) {
-        $hashcode = hash('sha256', $sha = "{$this->cred->app}:::::{$msg->challenge}:{$this->cred->pw}");
+        $infoObj = new \stdClass();
+        $infoHashString = json_encode($infoObj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $hashcode = hash('sha256', $sha = "{$this->cred->app}:::::{$infoHashString}:{$msg->challenge}:{$this->cred->pw}");
         $this->log("computed challenge $sha");
         $this->sessionKey = hash('sha256', "innovaphoneAppSessionKey:{$msg->challenge}:{$this->cred->pw}");
-        $this->sendMessage($this->loginData = new Message("AppLogin", "digest", $hashcode, "domain", "", "sip", "", "guid", "", "dn", "", "app", $this->cred->app));
+        $this->sendMessage($this->loginData = new Message("AppLogin", "digest", $hashcode, "domain", "", "sip", "", "guid", "", "dn", "", "app", $this->cred->app, "info", $infoObj));
     }
 
     /**
@@ -2105,7 +2105,7 @@ class ManagerDumpAppService extends FinitStateAutomaton {
     public function getHTTPKeyUrl($app = null) {
         if ($this->httpkey == null)
             return null;
-        $uri = $this->managerUri . "/dbdump?key={$this->httpkey}";
+        $uri = dirname($this->managerUri) . "/dbdump?key={$this->httpkey}";
         if ($app != null) {
             $uri .= "&app=$app";
         }
@@ -2120,9 +2120,13 @@ class ManagerDumpAppService extends FinitStateAutomaton {
     }
 
     public function GetAppDump($app) {
-        $context = $this->createPseudo11StreamContext();
         if (($dumpurl = $this->getHTTPKeyUrl($app)) != null) {
-            return file_get_contents($dumpurl, false, $context);
+            $curl = curl_init();
+            curl_setopt($curl, CURLOPT_CONNECTTIMEOUT_MS, 3000);
+            curl_setopt($curl, CURLOPT_TIMEOUT_MS, 12000);
+            curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($curl, CURLOPT_URL, $dumpurl);
+            return curl_exec($curl);
         }
     }
 
