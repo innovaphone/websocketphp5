@@ -137,6 +137,9 @@ class AppUserSessionCredentials {
 
 }
 
+/**
+ * user credentials to log in to an App Service
+ */
 class AppUserCredentials {
 
     private $name;
@@ -268,14 +271,14 @@ class Log {
      * log messages are printed out immedeatly if true
      * @var bool
      */
-    static private $logdebug = true;
+    static private $logdebug = false;
 
     /**
      * array of active log levels, key = source
      *   each element is an array with key = category
      * @var string[]
      */
-    static private $loglevel = array("" => array("" => true));
+    static private $loglevel = array("" => array("" => false, "runtime" => true, "error" => true, "smsg" => true));
 
     /**
      * set log level for source and category
@@ -289,6 +292,17 @@ class Log {
         foreach ($category as $c) {
             self::$loglevel[$source][$c] = $on;
         }
+    }
+
+    /**
+     * clear all log levels
+     * @param array $new if set, all log levels wil be overridde.  This value is usually retunred from a previousl call
+     * @return type
+     */
+    static function clearLogLevel($new = array()) {
+        $ret = self::$loglevel;
+        self::$loglevel = $new;
+        return $ret;
     }
 
     private static function dolog($source, $category) {
@@ -309,15 +323,15 @@ class Log {
     /**
      * turn on immedeate logging (default)
      */
-    static public function logon() {
-        $this->logdebug = true;
+    static public function logon($mode = true) {
+        self::$logdebug = $mode;
     }
 
     /**
      * turn off immedeate logging (default is on)
      */
     static public function logoff() {
-        $this->logdebug = false;
+        self::$logdebug = false;
     }
 
     /**
@@ -344,7 +358,7 @@ class Log {
      * @param string $msg
      * @param string $source
      */
-    public static function log($msg, $category = "", $source = "script") {
+    public static function log($msg, $category = "runtime", $source = "script") {
         if (!self::dolog($source, $category))
             return;
         $e = new \stdClass();
@@ -353,10 +367,14 @@ class Log {
         $e->category = $category;
         $e->class = $source;
         self::$logmsg[] = $e;
-        if (self::$logdebug) {
-            print self::formatLogEntry() . "\r\n";
+        $formattedMsg = self::formatLogEntry();
+        if (self::$logdebug === true) {
+            print $formattedMsg . "\r\n";
             @ob_flush();
+        } else if (is_string(self::$logdebug)) {
+            call_user_func(self::$logdebug, $formattedMsg);
         }
+        return $formattedMsg;
     }
 
     /**
@@ -413,7 +431,7 @@ class WSClient extends \WebSocket\Client {
     function __construct($sourcename, $uri = null, array $options = array()) {
         // if no context available, turn off peer verification for client
         if (empty($options['context'])) {
-            $options['context'] = stream_context_create(array("ssl" => array('verify_peer' => false, 'verify_peer_name'  => false, 'allow_self_signed' => true)));
+            $options['context'] = stream_context_create(array("ssl" => array('verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true)));
         }
         parent::__construct($uri, $options);
         $this->sourcename = "$sourcename";
@@ -710,7 +728,40 @@ abstract class FinitStateAutomaton {
     }
 
     // this function at least must be overriden by any derived class
-    abstract public function ReceiveInitialStart(\AppPlatform\Message $msg);
+    abstract public function ReceiveInitialStart(Message $msg);
+
+    /**
+     * this is a strange helper function that creates a stream context which works with the App Platform
+     * background: the app platform does not support HTTP 1.0 (it requires 1.1).  Many PHP functions however use HTTP 1.0 implicitly.
+     * The "solution" is to fake a stream context that lets a client look like a 1.1 version and the server behave like 1.0
+     * @param array $opts your default options for the new context
+     * @return resource a stream_context with some HTTP options set
+     */
+    public function createPseudo11StreamContext(array $opts = array()) {
+        if (!isset($opts['http']))
+            $opts['http'] = array();
+        foreach (
+        array(
+            'protocol_version' => '1.1',
+            'method' => 'GET',
+            'header' => array(
+                'Connection: close'
+            )
+        )
+        as $key => $setting) {
+            $opts['http'][$key] = $setting;
+        }
+        return stream_context_create($opts);
+    }
+
+    /**
+     * utility function for the simple case you want to run a single (i.e. this) automaton only
+     */
+    public function run($sockettimeout = 5) {
+        $auto = new Transitioner($this);
+        $auto->run($sockettimeout);
+    }
+
 }
 
 /**
@@ -828,8 +879,12 @@ class Transitioner {
                     . " via $handler");
             $auto->state->setName(call_user_func($callable, $msg));
             $newstate = $auto->state->getName();
-            if ($newstate != $state)
+            if ($newstate != $state) {
                 $this->log("$nickname state $state->$newstate", "state");
+                if ($newstate != "Dead") {
+                    $newstate = $this->transition($sourcename, $auto, new Message("Start", "_sourcename", $auto->getShortNickname()));
+                }
+            }
         }
         return $newstate;
     }
@@ -1395,7 +1450,7 @@ class UserPBXLoginWithAppAutomaton extends UserPBXLoginAutomaton {
     public function ReceiveInitialAppGetLoginResult(Message $msg) {
         $this->postEvent($msg->setMt("GotAppGetLoginResult"), $msg->src);
         if (--$this->nclients <= 0) {
-            $this->log("nclients is 0 now, exiting", "runtime");
+            $this->log("nclients is 0 now, exiting");
             return "Dead";
         }
     }
@@ -1415,6 +1470,7 @@ class AppServiceSpec {
      * AppService specfification
      * @param string $service service name, must match the last part of the instance URI 
      * @param string $name instance name, must match the name as configured in the PBX
+     * @param string $domain domain name, must match the first part of the instance URI 
      */
     public function __construct($service, $name = null, $domain = null) {
         $this->app = $service;
@@ -1638,7 +1694,7 @@ class AppServiceLogin {
      * @param AppServiceSpec[] $appServiceSpec specifies the services to connect to
      * @param array $log
      */
-    function __construct($pbx, AppUserCredentials $credentials, array $appServiceSpec = array(), $useWS = false) {
+    function __construct($pbx, AppUserCredentials $credentials, $appServiceSpec = array(), $useWS = false) {
 
         $this->useWS = $useWS;
         $this->pbxUrl = (strpos($pbx, "s://") !== false) ? $pbx :
@@ -1703,6 +1759,7 @@ class AppServiceLogin {
                 $this->pbxA->getIsLoggedIn() &&
                 $sc !== null &&
                 (
+                !$this->pbxOldSessionKey ||
                 $sc->pw != $this->pbxOldSessionKey->pw ||
                 $sc->usr != $this->pbxOldSessionKey->usr
                 )
@@ -1729,6 +1786,239 @@ class AppServiceLogin {
      */
     protected function readSessionKey() {
         return @file_get_contents("session.txt");
+    }
+
+}
+
+/**
+ * a class to get access to the AdminUI of a devices which is registered with Devices
+ * you will need an authenticated WebSocket towards the Devices instance
+ * you could use something like
+ *  $apc = new AppServiceLogin("sindelfingen.sample.dom", new AppUserCredentials("ckl", "pwd"), new AppServiceSpec("\$innovaphone-devices"));
+ *  $apc->connect();
+ * for this
+ */
+class DevicesGetAdminAccess extends FinitStateAutomaton {
+
+    protected $GetUserInfoResult = null;
+
+    /**
+     * @var \stdClass[] list of known (or requested) macs
+     */
+    protected $macs = null;
+
+    /**
+     * @var bool true if we want all devices known to Devices
+     */
+    protected $getAllDevices = false;
+
+    /**
+     * @var \stdClass domain info received from devices
+     */
+    protected $domains = array();
+    private $gotDomains = false, $gotDevices = 0, $gotKey = false;
+
+    /**
+     * @var string base uri of the APP PlatForm
+     */
+    protected $apppfUri = null;
+
+    /**
+     * get the passthrough URL to the device (so you can do a GET request to it)
+     * @param string $mac mac address
+     * @return string|false 
+     */
+    public function getDeviceAccessURL($mac) {
+        $mac = $this->fixmac($mac);
+        if (!isset($this->macs[$mac]) || !isset($this->macs[$mac]->hwId))
+            return false;
+        $dev = $this->macs[$mac];
+        $rurl = $this->getKey();
+        $dev->deviceAccessURL = "http" . substr($this->getWs()->getUrl(), 2) . "/passthrough/$dev->hwId/$rurl";
+        return $dev->deviceAccessURL;
+    }
+
+    /**
+     * get device info
+     * @param string $mac
+     * @return boolean|\stdClass device info as returned from Devices, either for a dedicated device or all
+     */
+    public function getDeviceInfo($mac = null) {
+        if ($mac !== null) {
+            $mac = $this->fixmac($mac);
+            if (isset($this->macs[$mac]) && isset($this->macs[$mac]->hwId)) {
+                $this->getDeviceAccessURL($mac);
+                return $this->macs[$mac];
+            }
+            return false;
+        }
+        foreach (array_keys($this->macs) as $mac) {
+            $this->getDeviceAccessURL($mac);
+        }
+        return $this->macs;
+    }
+
+    private function nextState() {
+        if ($this->gotDomains && ($this->gotDevices <= 0) && $this->gotKey) {
+            // compute device access URL
+            $this->apppfUri = parse_url($this->getWs()->getUrl(), PHP_URL_HOST);
+            return "Dead";
+        }
+        return null;
+    }
+
+    /**
+     * this key authenticates a plain HTTP request, valid until the WebSocket dies
+     * @return string
+     */
+    public function getKey() {
+        return $this->GetUserInfoResult !== null ? $this->GetUserInfoResult->key : null;
+    }
+
+    public function ReceiveInitialStart(Message $msg) {
+        $this->sendMessage(new Message("GetDomains", "recvUpdates", false));
+        $this->sendMessage(new Message("GetDevices", "recvUpdates", false, "domainIds", "", "unassigned", false));
+        $this->sendMessage(new Message("GetUserInfo"));
+    }
+
+    public function ReceiveInitialGetDevicesResult(Message $msg) {
+        foreach ($msg->devices as $d) {
+            $fmac = $this->fixmac($d->hwId);
+            if ($this->getAllDevices || isset($this->macs[$fmac])) {
+                $this->macs[$fmac] = $d;
+                $this->gotDevices--;
+                if (!$this->getAllDevices && $this->gotDevices <= 0) {
+                    break;
+                }
+            }
+        }
+        if (isset($msg->last) && $msg->last) {
+            $this->gotDevices = 0;
+        }
+        return $this->nextState();
+    }
+
+    public function ReceiveInitialGetDomainsResult($msg) {
+        foreach ($msg->domains as $domain) {
+            $this->domains[$domain->id] = $domain;
+        }
+        if (isset($msg->last) && $msg->last)
+            $this->gotDomains = true;
+        return $this->nextState();
+    }
+
+    public function ReceiveInitialGetUserInfoResult(Message $msg) {
+        $this->GetUserInfoResult = $msg;
+        $this->gotKey = true;
+        return $this->nextState();
+    }
+
+    /**
+     * setup the class
+     * @param WSClient $ws authenticated websocket towards the Devices instance
+     * @param string[] $macs list of device macs we are interested (or null, so we get all known)
+     * @param string $nickname
+     */
+    public function __construct(WSClient $ws, $macs = null, $nickname = "DevAccess") {
+        parent::__construct($ws, $nickname);
+        if ($macs !== null) {
+            if (!is_array($macs))
+                $macs = array($macs);
+            foreach ($macs as $mac) {
+                $this->macs[$this->fixmac($mac)] = new \stdClass();
+            }
+            $this->gotDevices = count($macs);
+        } else {
+            $this->getAllDevices = true;
+            $this->gotDevices = 999999;
+        }
+    }
+
+    private function fixmac($mac) {
+        return strtolower(str_replace("-", "", $mac));
+    }
+
+}
+
+/**
+ * a class that pulls an XML dump from an appservice (through the manager)
+ */
+class ManagerDumpAppService extends FinitStateAutomaton {
+
+    protected $httpkey = null;
+    protected $managerUri = null;
+
+    /**
+     * get the HTTP URL pseudo auth key to access devices
+     * @return string 
+     */
+    public function getHttpkey() {
+        return $this->httpkey;
+    }
+
+    /**
+     * get the manager's URI
+     * @return string URI
+     */
+    public function getManagerUri() {
+        return $this->managerUri;
+    }
+
+    /**
+     * event function for the InitialLoginSuccess message
+     * this event is generated by the AppLoginAutomaton that does the login for us
+     * when this is received, we start our activity
+     * @param Message $msg
+     */
+    public function ReceiveInitialStart(Message $msg) {
+        $this->httpkey = null;
+        $this->sendMessage(new Message("RequestHttpKey"));
+    }
+
+    /**
+     * event function for the RequestHttpKeyResult message (received from the Devices app service)
+     * @param Message $msg
+     * @return string the new state.  We always tranistion to "Dead" when we received this message. On success, we post the 
+     * HttpKeySuccess message (which can be received with a ReceiveInitialHttpKeySuccess function in other automatons
+     */
+    public function ReceiveInitialRequestHttpKeyResult(Message $msg) {
+        if (isset($msg->key)) {
+            $this->httpkey = $msg->key;
+            $this->log("HTTP Key received: {$msg->key}");
+            $this->managerUri = $this->getWs()->getUrl();
+        } else {
+            $this->log("no HTTP key returned");
+        }
+        return "Dead";
+    }
+
+    /**
+     * get AppPlattform state dump for instance $app
+     * @param string $app the instance short name (??)
+     * @return string
+     */
+    public function getHTTPKeyUrl($app = null) {
+        if ($this->httpkey == null)
+            return null;
+        $uri = $this->managerUri . "/dbdump?key={$this->httpkey}";
+        if ($app != null) {
+            $uri .= "&app=$app";
+        }
+        switch (parse_url($uri, PHP_URL_SCHEME)) {
+            case "ws" : $uri = str_replace("ws://", "http://", $uri);
+                break;
+            case "wss" : $uri = str_replace("wss://", "https://", $uri);
+        }
+        if ($this->getUseWS())
+            $uri = str_replace("https://", "http://", $uri);
+        return $uri;
+    }
+
+    public function GetAppDump($app) {
+        $context = $this->createPseudo11StreamContext();
+        if (($dumpurl = $this->getHTTPKeyUrl($app)) != null) {
+            return file_get_contents($dumpurl, false, $context);
+        }
     }
 
 }

@@ -173,6 +173,8 @@ class Base {
         $this->write($frame);
     }
 
+    private $dbgMsgCnt = 0, $dbgFragCnt = 0;
+
     /**
      * receive message from socket
      * @return boolean | string null => no data yet, false => EOF, otherwise => message received
@@ -184,23 +186,27 @@ class Base {
         $this->huge_payload = '';
 
         $response = null;
+        $this->dbgMsgCnt++;
+        $this->dbgFragCnt = 0;
         while (is_null($response)) {
-            $this->streamlog("about to receive");
+//         $this->debug("about to receive #" . $this->dbgMsgCnt);
             $response = $this->receive_fragment();
             if ($response === false) {
-                $this->streamlog("EOF");
+//         $this->debug("EOF");
                 return false;
             }
         }
-        $this->streamlog("receive response ($response)");
+//         $this->debug("receive response ($response)");
         return $response;
     }
 
     protected function receive_fragment() {
 
+//         $this->debug("receive fragment #" . $this->dbgMsgCnt . ":" . ++$this->dbgFragCnt);
+
         // Just read the main fragment information first.
         if (($data = $this->read(2)) === false) {
-            $this->streamlog("failed to read 2 bytes header");
+//         $this->debug("failed to read 2 bytes header");
             return $this->readReset();
         }
 
@@ -239,7 +245,7 @@ class Base {
             else
                 $data = $this->read(8); // 127: Payload is a 64-bit unsigned int
             if ($data === false) {
-                $this->streamlog("failed to read header for $payload_length");
+//         $this->debug("failed to read header for $payload_length");
                 return $this->readReset();
             }
             $payload_length = bindec(self::sprintB($data));
@@ -249,7 +255,7 @@ class Base {
         if ($mask) {
             $masking_key = $this->read(4);
             if ($masking_key === false) {
-                $this->streamlog("failed to read 4 bytes header");
+//         $this->debug("failed to read 4 bytes header");
                 return $this->readReset();
             }
         }
@@ -258,7 +264,7 @@ class Base {
         if ($payload_length > 0) {
             $data = $this->read($payload_length);
             if ($data === false) {
-                $this->streamlog("failed to read $payload_length payload");
+//         $this->debug("failed to read $payload_length payload");
                 return $this->readReset();
             }
 
@@ -284,13 +290,23 @@ class Base {
 
             if ($this->is_closing)
                 $this->is_closing = false; // A close response, all done.
-            // And close the socket.
+
+
+
+
+                
+// And close the socket.
             fclose($this->socket);
             $this->is_connected = false;
         }
 
+        // we actually used the read result, so discard the read buffer
+//         $this->debug("received complete fragment");
+        $this->readDone();
+
         // if this is not the last fragment, then we need to save the payload
         if (!$final) {
+//         $this->debug("but not final fragment");
             $this->huge_payload .= $payload;
             return null;
         }
@@ -300,8 +316,7 @@ class Base {
             $payload = $this->huge_payload .= $payload;
             $this->huge_payload = null;
         }
-
-        $this->readDone();
+//         $this->debug("final fragment");
         return $payload;
     }
 
@@ -332,7 +347,7 @@ class Base {
         $totaltime = 0;
         while ($written < $towrite && $totaltime < 1500 && ($fwresult = fwrite($this->socket, $data, $towrite - $written)) !== false) {
             if ($written + $fwresult < $towrite) {
-                \AppPlatform\Log::log("WSClient::write: towrite=$towrite written=$written fwresult=$fwresult - sleeping to drain socket");
+                // $this->debug("WSClient::write: towrite=$towrite written=$written fwresult=$fwresult - sleeping to drain socket");
                 usleep(250 * 1000); // 250ms
                 $totaltime += 250;   // total time spent waiting
             }
@@ -347,8 +362,34 @@ class Base {
         }
     }
 
+    private $debugFile = false;
+    private $debugBuffer = "";
+
+    private function debug($msg) {
+//         $this->debugBuffer .= $msg . PHP_EOL;
+    }
+
+    private function closeDebug() {
+        if ($this->debugFile !== false && strlen($this->debugBuffer)) {
+            fwrite($this->debugFile, $this->debugBuffer);
+        }
+    }
+
+    public function __destruct() {
+        $this->closeDebug();
+    }
+
+    static $doSocketDebug = false;
+
+    public function __construct() {
+        if (self::$doSocketDebug) {
+//         $this->debugFile = fopen("_DEBUG." . rand() . "-debug.log", "w");
+        }
+    }
+
     private function readAhead() {
         // read whatever can be read from the async stream
+//         $this->debug("readAhead");
         while (true) {
             $frresult = fread($this->socket, 4096);
             if ($frresult === false) {
@@ -356,23 +397,33 @@ class Base {
             } else if ($frresult === "") {
                 break;
             }
+            $split = strlen($this->readData);
+            $split = $split < 40 ? 40 : $split;
             $this->readData .= $frresult;
+            // $this->debug("read chunk " . strlen($frresult) . "b head=(" . substr($frresult, 0, 40) . "), tail=(" . substr($frresult, -40) . ")", "runtime", "STACK");
+            // $this->debug("split=(" . substr($this->readData, $split - 40, 80) . ")", "runtime", "STACK");
         }
+//         $this->debug("after readAhead: " . $this->available() . "b available");
     }
 
     public function available() {
+//         $this->debug("readData " . strlen($this->readData) . "b, readOffset " . $this->readOffset . "b, avail " . (strlen($this->readData) - $this->readOffset) . "b", "runtime", "STACK");
         return strlen($this->readData) - $this->readOffset;
     }
 
     protected function read($length) {
         if ($this->oldReadOffset === null)
             $this->oldReadOffset = $this->readOffset;
+//         $this->debug("read($length), readOffset=" . $this->readOffset . ", oldReadOffset=" . $this->oldReadOffset);
         $this->readAhead();
         $avail = $this->available();
-        if ($avail < $length)
+        if ($avail < $length) {
+//         $this->debug("avail $avail < required $length - pushback", "runtime", "STACK");
             return false;  // try again later
+        }
         $data = substr($this->readData, $this->readOffset, $length);
         $this->readOffset += $length;
+//         $this->debug("return {$length}b", "runtime", "STACK");
         return $data;
     }
 
@@ -380,19 +431,23 @@ class Base {
         if ($this->oldReadOffset === null) {
             throw(new Exception("readReset and oldoffset is null"));
         } else {
+            $oldro = $this->readOffset;
             $this->readOffset = $this->oldReadOffset;
             $this->oldReadOffset = null;
         }
-        $this->streamlog("reset read pointer to {$this->readOffset}");
+//         $this->debug("reset read pointer from $oldro to {$this->readOffset}");
         // return "fragment incomplete"
         return feof($this->socket) ? false : null;
     }
 
     protected function readDone() {
+//         $this->debug("readDone");
+        $this->available();
         $this->oldReadOffset = null;
         $this->readData = substr($this->readData, $this->readOffset);
         $this->readOffset = 0;
-        $this->streamlog("read done, reset buffer");
+        // $this->debug("readDone: read done, reset buffer, data left in buffer: ({$this->readData})");
+//         $this->debug("after readDone: " . $this->available() . "b available");
     }
 
     /**
@@ -414,22 +469,6 @@ class Client extends Base {
      * @var string
      */
     protected $socket_uri;
-
-    function streamlog($msg) {
-        static $dodebug = false;
-        if (!$dodebug)
-            return;
-        $this->log("$msg", "streamlog");
-    }
-    
-    function log($msg) {
-        static $pre = false;
-        if (!$pre) {
-            print "<pre>";
-            $pre = true;
-            print "{$this->socket_uri}: blu $msg<br>";
-        }
-    }
 
     /**
      * connect socket to URL
@@ -471,6 +510,7 @@ class Client extends Base {
             $this->options['fragment_size'] = 4096;
 
         $this->socket_uri = $uri;
+        parent::__construct();
     }
 
     public function __destruct() {
@@ -479,6 +519,7 @@ class Client extends Base {
                 fclose($this->socket);
             $this->socket = null;
         }
+        parent::__destruct();
     }
 
     /**
