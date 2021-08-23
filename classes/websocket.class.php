@@ -720,9 +720,10 @@ abstract class FinitStateAutomaton {
         // or
         //   https://apps.sample.dom/gartenzwerg.com/meine-schoenen-devices/$innovaphone-devices
         // we strip the trailing component and change http to ws to create the WS uri
+        // special case: it is a PBX URL, then don't strip the trailing part
 
         $parts = explode('/', $weburl);
-        if (count($parts) > 0) {
+        if (strpos($weburl, "/PBX0/APPS/websocket" /* PBX websocket path */) === false && count($parts) > 0) {
             unset($parts[count($parts) - 1]);
         }
         $wsuri = 'ws' . substr(implode('/', $parts), strlen('http'));
@@ -1597,6 +1598,7 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
             $thisapp = $components[$nc - 1];
             $thisservice = $components[$nc - 2];
             $thisdomain = $components[$nc - 3];
+            $this->log("found instance app=$thisapp service=$thisservice domain=$thisdomain vs. $spec->app/$spec->service/$spec->domain");
             if ($spec->domain !== null && $thisdomain != $spec->domain)
                 continue;
             if ($spec->service !== null && $thisservice != $spec->service)
