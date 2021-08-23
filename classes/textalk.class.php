@@ -56,6 +56,7 @@ class Base {
         'ping' => 9,
         'pong' => 10,
     );
+    protected $options = array();
 
     public function getSocket() {
         return $this->socket;

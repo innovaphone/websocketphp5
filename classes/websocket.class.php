@@ -411,6 +411,10 @@ class WSClient extends \WebSocket\Client {
      * @param array $options options based to the base class \WebSocket\Client
      */
     function __construct($sourcename, $uri = null, array $options = array()) {
+        // if no context available, turn off peer verification for client
+        if (empty($options['context'])) {
+            $options['context'] = stream_context_create(array("ssl" => array('verify_peer' => false, 'verify_peer_name'  => false, 'allow_self_signed' => true)));
+        }
         parent::__construct($uri, $options);
         $this->sourcename = "$sourcename";
         if ($uri !== null)
@@ -1485,7 +1489,7 @@ class AppLoginViaPBXAutomaton extends AppLoginAutomaton {
                 continue;
             return $app;
         }
-        $this->log("no matching AppService for '$app/$service'", "runtime");
+        $this->log("no matching AppService for '{$spec->app}/{$spec->service}/{$spec->domain}'", "runtime");
         return null;
     }
 
