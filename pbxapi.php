@@ -5,6 +5,14 @@
  * (c) innovaphone AG 2020
  */
 
+// pbx data, you can override it by placing similar next 4 lines into file my-pbx-data.php
+$pbxdns = "sindelfingen.sample.dom";
+$pbxuser = "ckl";
+$pbxpw = "pwd";
+$pbxapp = "pbxadminapi";
+// end of local pbx data
+@include 'my-pbx-data.php';
+
 require_once './classes/websocket.class.php';
 print "<pre>";
 
@@ -52,7 +60,7 @@ There must be an App object with name "pbxadminapi" and password "ip411"
 it needs to have the "Admin" and "PbxApi" flags set
 */
 
-$app = new PbxAppLoginAutomaton("sindelfingen.sample.dom", new AppPlatform\AppServiceCredentials("pbxadminapi", "ip411"));
+$app = new PbxAppLoginAutomaton($pbxdns, new AppPlatform\AppServiceCredentials($pbxapp, $pbxpw));
 $app->run();
 
 

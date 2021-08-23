@@ -5,6 +5,15 @@
  * (c) innovaphone AG 2020
  * @author ckl
  */
+
+// pbx data, you can override it by placing similar next 4 lines into file my-pbx-data.php
+$pbxdns = "sindelfingen.sample.dom";
+$pbxuser = "ckl";
+$pbxpw = "pwd";
+$pbxapp = "pbxadminapi";
+// end of local pbx data
+@include 'my-pbx-data.php';
+
 require_once './classes/websocket.class.php';
 print "<pre>";
 
@@ -22,7 +31,7 @@ AppPlatform\Log::setLogLevel("script", "", true);
 
 // login to PBX and devices and users
 $connector = new AppPlatform\AppServiceLogin(
-        "sindelfingen.sample.dom", new AppPlatform\AppUserCredentials("ckl", "pwd"), array(
+        $pbxdns, new AppPlatform\AppUserCredentials($pbxuser, $pbxpw), array(
     $devicesspec = new AppPlatform\AppServiceSpec("innovaphone-devices"),
     $usersspec = new AppPlatform\AppServiceSpec("innovaphone-users"),
         ),
@@ -32,11 +41,11 @@ $connector->connect();
 
 // look at the PBX login
 if ($connector->getPbxA()->getIsLoggedIn()) {
-    AppPlatform\Log::log("Logged in to PBX");
+    AppPlatform\Log::log("Logged in to PBX (user $pbxuser)");
     $pbxws = $connector->getPbxWS();
     $pbxloginresult = ($connector->getPbxA()->getResults());
 } else {
-    AppPlatform\Log::log("Failed to log in to PBX");
+    AppPlatform\Log::log("Failed to log in to PBX (user $pbxuser)");
     exit;
 }
 
